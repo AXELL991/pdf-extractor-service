@@ -1,19 +1,36 @@
 [tool.uv]
+package = false
 
 [project]
 name = "pdf-extractor-service"
 version = "0.1.0"
-description = "Stateless FastAPI service to extract text from PDFs"
+description = "Servicio sin estado para extracción de texto de PDFs"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pypdf",
-    "python-dotenv",
-    "prometheus-client",
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.32,<0.34",
+    "pypdf>=5.1,<6.0",
+    "python-multipart>=0.0.18,<0.1",
+    "prometheus-client>=0.21,<0.22",
+    "pydantic-settings>=2.6,<3.0",
+    "python-json-logger>=3.2,<4.0",
 ]
 
-[build-system]
-requires = ["uv"]
-build-backend = "uv.build"
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.24,<0.25",
+    "httpx>=0.28,<0.29",
+    "ruff>=0.8,<0.9",
+]
 
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
