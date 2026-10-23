@@ -1,0 +1,19 @@
+[tool.uv]
+
+[project]
+name = "pdf-extractor-service"
+version = "0.1.0"
+description = "Stateless FastAPI service to extract text from PDFs"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pypdf",
+    "python-dotenv",
+    "prometheus-client",
+]
+
+[build-system]
+requires = ["uv"]
+build-backend = "uv.build"
+
