@@ -1,19 +1,28 @@
-"""Core configuration for pdf-extractor-service.
-All settings are read from environment variables following Twelve‑Factor principles.
-"""
-import os
+"""Configuración central del pdf-extractor-service (pydantic-settings)."""
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Logging level (default INFO)
-LOGLEVEL = os.getenv("LOGLEVEL", "INFO")
 
-# Maximum file size in megabytes (default 5 MiB)
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "5"))
-MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-# Number of workers in the extraction pool (default 2)
-WORKER_POOL_SIZE = int(os.getenv("WORKER_POOL_SIZE", "2"))
+    # Logging
+    loglevel: str = "INFO"
 
-# Maximum number of pending jobs in the queue before back‑pressure is applied.
-# When the queue is full the service returns HTTP 429.
-QUEUE_MAXSIZE = int(os.getenv("QUEUE_MAXSIZE", "10"))
-"
+    # Límites de extracción
+    max_file_size_mb: int = 10
+    max_pages: int = 500
+    extract_timeout_seconds: float = 60.0
+
+    # Pool de procesos
+    worker_pool_size: int = 2
+    queue_maxsize: int = 10
+
+    # Auth interna
+    internal_api_token: str = "change-me"
+
+    @property
+    def max_file_size_bytes(self) -> int:
+        return self.max_file_size_mb * 1024 * 1024
+
+
+settings = Settings()

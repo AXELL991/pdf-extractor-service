@@ -1,16 +1,18 @@
+"""Configuración de logging estructurado (JSON) para pdf-extractor-service."""
 import logging
 import sys
-from pythonjsonlogger import jsonlogger
 
-def configure_logging(level: str = "INFO"):
-    log = logging.getLogger()
-    log.setLevel(level.upper())
+from pythonjsonlogger.jsonlogger import JsonFormatter
+
+
+def configure_logging(level: str = "INFO") -> None:
+    root = logging.getLogger()
+    root.setLevel(level.upper())
     handler = logging.StreamHandler(sys.stdout)
-    formatter = jsonlogger.JsonFormatter(
-        "%({levelname)s)s %(asctime)s %(name)s %(message)s",
-        rename_fields={"levelname": "level", "asctime": "timestamp"},
+    handler.setFormatter(
+        JsonFormatter(
+            fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+            rename_fields={"levelname": "level", "asctime": "timestamp"},
+        )
     )
-    handler.setFormatter(formatter)
-    log.handlers = []
-    log.addHandler(handler)
-
+    root.handlers = [handler]

@@ -1,9 +1,19 @@
-"""Metrics utilities for pdf_extractor_service.
-Placeholder implementation – replace with real Prometheus metrics.
-"""
+"""Métricas Prometheus para pdf-extractor-service."""
+from prometheus_client import Counter, Gauge, Histogram
 
-# Example placeholder metric
-from prometheus_client import Counter
+extraction_duration = Histogram(
+    "pdf_extraction_duration_seconds",
+    "Duración de la extracción de PDF en segundos",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 30, 60],
+)
 
-requests_total = Counter('pdf_extractor_requests_total', 'Total requests')
+extraction_errors = Counter(
+    "pdf_extraction_errors_total",
+    "Errores de extracción por tipo",
+    labelnames=["error_type"],
+)
 
+queue_size = Gauge(
+    "pdf_extraction_queue_size",
+    "Número actual de trabajos en cola",
+)
