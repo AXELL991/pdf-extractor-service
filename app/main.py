@@ -2,10 +2,15 @@
 Punto de entrada del pdf-extractor-service.
 
 Rutas:
-  POST /v1/extract          - Extrae texto de un PDF (multipart, campo 'file')
-  GET  /health/live         - Liveness probe
-  GET  /health/ready        - Readiness probe
-  GET  /metrics             - Métricas Prometheus
+  POST /extract           - Contrato del TP: multipart (campo 'file') o body binario
+                            (Content-Type: application/pdf). Responde
+                            {"content","page_count"}. Sin auth interna.
+  POST /v1/extract        - Endpoint legacy del orquestador (token interno,
+                            {"text","pages"}).
+  GET  /health            - Healthcheck simple.
+  GET  /health/live       - Liveness probe.
+  GET  /health/ready      - Readiness probe (pool disponible).
+  GET  /metrics           - Métricas Prometheus.
 """
 from __future__ import annotations
 
@@ -14,26 +19,28 @@ import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
-from fastapi import FastAPI, File, Header, HTTPException, Request, Response, UploadFile, status
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile, status
+from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from app.core.config import settings
+from app.core.errors import (
+    ExtractionTimeoutError,
+    PdfInvalidError,
+    QueueFullError,
+)
 from app.core.logging_config import configure_logging
 from app.core.metrics import extraction_duration, extraction_errors
-from app.workers.pool import (
-    PDFEncryptedError,
-    QueueFullError,
-    shutdown,
-    startup,
-    submit_extraction,
-)
+from app.workers.pool import get_pool, shutdown, startup, submit_extraction
 
 configure_logging(settings.loglevel.upper())
 logger = logging.getLogger(__name__)
 
 MAX_BYTES = settings.max_file_size_bytes
 PDF_MAGIC = b"%PDF-"
+CHUNK_SIZE = 65536  # 64 KiB
 
 
 @asynccontextmanager
@@ -68,8 +75,14 @@ async def request_id_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# Health endpoints (exentos de auth interna)
+# Health endpoints
 # ---------------------------------------------------------------------------
+@app.get("/health", tags=["health"])
+async def health():
+    """Healthcheck simple."""
+    return {"status": "ok"}
+
+
 @app.get("/health/live", tags=["health"])
 async def health_live():
     """Liveness probe: el proceso está vivo."""
@@ -79,6 +92,7 @@ async def health_live():
 @app.get("/health/ready", tags=["health"])
 async def health_ready():
     """Readiness probe: el pool está disponible."""
+    get_pool()  # lanza si el pool no está inicializado
     return {"status": "ok"}
 
 
@@ -92,7 +106,7 @@ async def metrics():
 
 
 # ---------------------------------------------------------------------------
-# Autenticación interna
+# Autenticación interna (solo endpoint legacy /v1/extract)
 # ---------------------------------------------------------------------------
 def verify_internal_token(x_internal_token: str | None) -> None:
     if not secrets.compare_digest(
@@ -103,93 +117,136 @@ def verify_internal_token(x_internal_token: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# POST /v1/extract
+# Lectura del payload con límite de tamaño (streaming, sin disco)
 # ---------------------------------------------------------------------------
-@app.post("/v1/extract", tags=["extracción"])
-async def extract(
-    request: Request,
-    file: UploadFile = File(..., description="Archivo PDF a procesar"),
-    x_internal_token: str | None = Header(default=None),
-):
-    """
-    Extrae texto de un PDF.
-
-    Errores:
-    - 413: El archivo supera MAX_FILE_SIZE_MB.
-    - 415: El archivo no es un PDF (magic bytes incorrectos).
-    - 422: El PDF está cifrado o corrupto.
-    - 429: Cola llena (incluye cabecera Retry-After).
-    - 504: Timeout en la extracción.
-    """
-    verify_internal_token(x_internal_token)
-
-    # Leer desde el UploadFile en chunks, cortando al superar el límite
+async def _read_with_cap(source: AsyncIterator[bytes], max_bytes: int) -> bytes:
+    """Lee chunks de un async-iterable cortando al superar ``max_bytes`` (413)."""
     chunks: list[bytes] = []
     total = 0
-    chunk_size = 65536  # 64 KiB
-    while True:
-        chunk = await file.read(chunk_size)
+    async for chunk in source:
         if not chunk:
-            break
+            continue
         total += len(chunk)
-        if total > MAX_BYTES:
+        if total > max_bytes:
             extraction_errors.labels(error_type="too_large").inc()
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=f"El archivo supera el límite de {settings.max_file_size_mb} MB",
             )
         chunks.append(chunk)
+    return b"".join(chunks)
 
-    pdf_bytes = b"".join(chunks)
 
-    # Validar magic bytes
+async def _read_upload(upload: UploadFile) -> bytes:
+    """Lee un UploadFile en chunks con tope de tamaño."""
+
+    async def _gen():
+        while True:
+            chunk = await upload.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            yield chunk
+
+    return await _read_with_cap(_gen(), MAX_BYTES)
+
+
+async def _read_pdf_payload(request: Request) -> bytes:
+    """Lee el PDF: multipart/form-data (campo 'file') o body binario raw."""
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Falta el campo 'file' en el multipart/form-data",
+            )
+        return await _read_upload(upload)
+    # Body binario directo (Content-Type: application/pdf)
+    return await _read_with_cap(request.stream(), MAX_BYTES)
+
+
+async def _extract_pdf_bytes(pdf_bytes: bytes) -> dict:
+    """Valida magic bytes y envía al pool de procesos. Devuelve {"text","pages"}."""
     if not pdf_bytes.startswith(PDF_MAGIC):
-        extraction_errors.labels(error_type="not_pdf").inc()
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="El archivo no es un PDF válido",
-        )
+        raise PdfInvalidError("El archivo no es un PDF válido")
+    return await submit_extraction(pdf_bytes)
 
-    # Enviar al pool de procesos
+
+def _map_pool_error(exc: Exception, legacy: bool) -> HTTPException:
+    """Mapea errores del pool a HTTPException según el contrato del endpoint."""
+    if isinstance(exc, QueueFullError):
+        return HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+            headers=exc.headers,
+        )
+    if isinstance(exc, ExtractionTimeoutError):
+        code = status.HTTP_504_GATEWAY_TIMEOUT if legacy else status.HTTP_503_SERVICE_UNAVAILABLE
+        return HTTPException(status_code=code, detail=exc.detail, headers=exc.headers)
+    if isinstance(exc, PdfInvalidError):
+        code = status.HTTP_422_UNPROCESSABLE_ENTITY if legacy else status.HTTP_400_BAD_REQUEST
+        return HTTPException(status_code=code, detail=exc.detail)
+    extraction_errors.labels(error_type="corrupt").inc()
+    logger.exception("Error inesperado al extraer PDF")
+    code = status.HTTP_422_UNPROCESSABLE_ENTITY if legacy else status.HTTP_400_BAD_REQUEST
+    return HTTPException(
+        status_code=code, detail="El PDF está corrupto o no se puede procesar"
+    )
+
+
+async def _process_pdf(pdf_bytes: bytes, legacy: bool) -> dict:
+    """Extrae y valida límite de páginas. Mapea errores del pool a HTTP."""
     t0 = time.perf_counter()
     try:
-        result = await submit_extraction(pdf_bytes)
-    except QueueFullError:
-        extraction_errors.labels(error_type="queue_full").inc()
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Cola de extracción llena. Intente más tarde.",
-            headers={"Retry-After": "5"},
-        )
-    except TimeoutError:
-        extraction_errors.labels(error_type="timeout").inc()
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Timeout al extraer el PDF",
-        )
-    except PDFEncryptedError:
-        extraction_errors.labels(error_type="encrypted").inc()
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El PDF está cifrado o protegido con contraseña",
-        )
-    except Exception as exc:
-        extraction_errors.labels(error_type="corrupt").inc()
-        logger.exception("Error inesperado al extraer PDF")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El PDF está corrupto o no se puede procesar",
-        ) from exc
-    finally:
-        elapsed = time.perf_counter() - t0
-        extraction_duration.observe(elapsed)
+        result = await _extract_pdf_bytes(pdf_bytes)
+    except Exception as exc:  # noqa: BLE001 - se mapea a error controlado
+        extraction_duration.observe(time.perf_counter() - t0)
+        raise _map_pool_error(exc, legacy=legacy) from None
+    extraction_duration.observe(time.perf_counter() - t0)
 
-    # Verificar límite de páginas
     if result["pages"] > settings.max_pages:
         extraction_errors.labels(error_type="too_many_pages").inc()
+        code = status.HTTP_422_UNPROCESSABLE_ENTITY if legacy else status.HTTP_400_BAD_REQUEST
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=code,
             detail=f"El PDF supera el límite de {settings.max_pages} páginas",
         )
+    return result
 
+
+# ---------------------------------------------------------------------------
+# POST /extract  (contrato del TP: sin auth, {"content","page_count"})
+# ---------------------------------------------------------------------------
+@app.post("/extract", tags=["extracción"])
+async def extract(request: Request):
+    """
+    Extrae texto de un PDF.
+
+    Admite multipart/form-data (campo ``file``) y body binario directo
+    (Content-Type: application/pdf).
+
+    Errores:
+    - 400: PDF inválido / falta el campo file.
+    - 413: archivo demasiado grande.
+    - 429: cola llena (cabecera Retry-After).
+    - 503: saturación/timeout de extracción (cabecera Retry-After).
+    """
+    pdf_bytes = await _read_pdf_payload(request)
+    result = await _process_pdf(pdf_bytes, legacy=False)
+    return {"content": result["text"], "page_count": result["pages"]}
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/extract  (legacy orquestador: token, {"text","pages"})
+# ---------------------------------------------------------------------------
+@app.post("/v1/extract", tags=["extracción"])
+async def extract_v1(
+    file: UploadFile = File(..., description="Archivo PDF a procesar"),
+    x_internal_token: str | None = Header(default=None),
+):
+    verify_internal_token(x_internal_token)
+
+    pdf_bytes = await _read_upload(file)
+    result = await _process_pdf(pdf_bytes, legacy=True)
     return {"text": result["text"], "pages": result["pages"]}

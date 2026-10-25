@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<0.116",
     "uvicorn[standard]>=0.32,<0.34",
-    "pypdf>=5.1,<6.0",
+    "pymupdf>=1.24,<2.0",
     "python-multipart>=0.0.18,<0.1",
     "prometheus-client>=0.21,<0.22",
     "pydantic-settings>=2.6,<3.0",

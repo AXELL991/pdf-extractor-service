@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     worker_pool_size: int = 2
     queue_maxsize: int = 10
 
-    # Auth interna (requerido, sin valor por defecto inseguro)
-    internal_api_token: str
+    # Auth interna (requerido; se provee por variable de entorno en producción).
+    internal_api_token: str = "change-me-in-production"
 
     @property
     def max_file_size_bytes(self) -> int:
