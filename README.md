@@ -1,27 +1,25 @@
 # pdf-extractor-service
 
-Servicio **sin estado** que extrae texto de archivos PDF y lo devuelve en Markdown.
-No usa base de datos. Es invocado por el orquestador (`export-viewer-service`) y
-expuesto directamente para pruebas de carga (k6 / Vegeta).
+Servicio **sin estado** que extrae texto de archivos PDF. No usa base de datos. Es invocado por el orquestador (`export-viewer-service`) y expuesto directamente para pruebas de carga (k6 / Vegeta).
 
 ## Endpoints
 
 | Método | Ruta | Descripción | Request | Respuesta |
 |--------|------|-------------|---------|-----------|
-| POST | `/extract` | Extrae texto de un PDF. | `multipart/form-data` (campo `file`) **o** body binario (`Content-Type: application/pdf`) | `200 { "content", "page_count" }` |
-| POST | `/v1/extract` | Endpoint legacy del orquestador (con `X-Internal-Token`). | multipart `file` | `200 { "text", "pages" }` |
-| GET | `/health` | Healthcheck simple. | – | `200 { "status": "ok" }` |
-| GET | `/health/live` | Liveness probe. | – | `200 { "status": "ok" }` |
-| GET | `/health/ready` | Readiness probe (pool disponible). | – | `200 { "status": "ok" }` |
-| GET | `/metrics` | Métricas Prometheus. | – | `200` texto plano |
+| POST | `/extract` | Extrae texto de un PDF (contrato TP) | multipart `file` o body binario `application/pdf` | `200 { "content", "page_count" }` |
+| POST | `/v1/extract` | Endpoint legacy del orquestador (token) | multipart `file` | `200 { "text", "pages" }` |
+| GET | `/health` | Healthcheck simple | — | `200 { "status": "ok" }` |
+| GET | `/health/live` | Liveness probe | — | `200 { "status": "ok" }` |
+| GET | `/health/ready` | Readiness probe (pool disponible) | — | `200 { "status": "ok" }` |
+| GET | `/metrics` | Métricas Prometheus | — | texto plano |
 
 ### Códigos de error
 
 | Código | Causa | Cabecera |
 |--------|-------|----------|
-| 400 | PDF inválido / falta campo `file` / supera páginas | – |
-| 401 | Token interno inválido (`/v1/extract`) | – |
-| 413 | Archivo mayor a `MAX_FILE_SIZE_MB` | – |
+| 400 | PDF inválido / falta campo `file` / supera páginas | — |
+| 401 | Token interno inválido (`/v1/extract`) | — |
+| 413 | Archivo mayor a `MAX_FILE_SIZE_MB` | — |
 | 429 | Cola de extracción llena (backpressure) | `Retry-After` |
 | 503 | Timeout de extracción (saturación) | `Retry-After` |
 
@@ -33,7 +31,7 @@ Nunca se devuelve 500 por saturación.
 - **Admisión con backpressure:** contador de jobs en vuelo vs `QUEUE_MAXSIZE`; lleno → HTTP 429 inmediato (sin acumular trabajo expirado).
 - **Todo en memoria:** el PDF se lee por streaming con tope de tamaño y se pasa a `pymupdf.open(stream=…)`; nunca se vuelca a disco ni se duplican buffers.
 
-## Variables de entorno (Twelve-Factor)
+## Variables de entorno
 
 | Variable | Por defecto | Descripción |
 |----------|-------------|-------------|
@@ -47,30 +45,36 @@ Nunca se devuelve 500 por saturación.
 
 ## Ejecución
 
-### Local (desarrollo)
+### Standalone (solo el extractor)
 
 ```bash
 cd pdf-extractor-service
-uv sync --frozen
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+docker compose up --build -d
 ```
 
-### Con Docker (todo el stack, un único comando)
-
-Desde la raíz del repositorio:
+### Desde el orquestador (stack completo, 5 réplicas)
 
 ```bash
-docker compose up --build
+cd ../export-viewer-service
+docker compose up --build -d
 ```
 
-Levanta mongodb, pdf-extractor-service (5 réplicas, 1 CPU y 1 GB c/u), document-crud-service, export-viewer-service y traefik. El extractor se expone vía Traefik en el puerto 80.
+El extractor no publica puerto en el host (5 réplicas = conflicto de bind). Se accede vía la red interna de Docker: `http://pdf-extractor-service:8000/extract`.
 
-### Pruebas
+## Pruebas
 
 ```bash
 uv run pytest tests/ -v
 uv run ruff check app/ tests/
 ```
+
+## PDFs de estrés
+
+En `tests/stress/pdfs/`:
+- `stress_1mb.pdf` (~1 MB)
+- `stress_3mb.pdf` (~3 MB)
+- `stress_6mb.pdf` (~6 MB)
+- `stress_9mb.pdf` (~9 MB)
 
 ## Cierre ordenado
 
