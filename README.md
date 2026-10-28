@@ -36,7 +36,7 @@ Nunca se devuelve 500 por saturación.
 | Variable | Por defecto | Descripción |
 |----------|-------------|-------------|
 | `LOGLEVEL` | `info` | Nivel de logging (JSON a stdout) |
-| `INTERNAL_API_TOKEN` | `change-me-in-production` | Token para `/v1/extract` |
+| `INTERNAL_API_TOKEN` | — | Token para `/v1/extract` (requerido, sin default inseguro) |
 | `MAX_FILE_SIZE_MB` | `15` | Tamaño máximo de PDF en MB |
 | `MAX_PAGES` | `500` | Páginas máximas por PDF |
 | `EXTRACT_TIMEOUT_SECONDS` | `25` | Timeout del job (menor al timeout de cliente, 30 s) |

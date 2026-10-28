@@ -19,7 +19,6 @@ from concurrent.futures import BrokenExecutor, ProcessPoolExecutor
 from app.core.config import settings
 from app.core.errors import ExtractionTimeoutError, QueueFullError
 from app.core.metrics import queue_size
-from app.services.pdf_extractor import extract_pdf_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,8 @@ logger = logging.getLogger(__name__)
 _pool: ProcessPoolExecutor | None = None
 # Número de trabajos admitidos en curso (solo modificado desde el event loop).
 _in_flight = 0
+# Función de extracción inyectada (inversión de dependencias).
+_extract_func = None
 
 
 def get_pool() -> ProcessPoolExecutor:
@@ -54,11 +55,21 @@ def _recycle_pool() -> None:
             logger.warning("No se pudo apagar limpiamente el pool previo")
 
 
-def startup() -> None:
-    """Inicializa el pool. Llamar desde el lifespan."""
-    global _pool, _in_flight
+def startup(extract_func=None) -> None:
+    """Inicializa el pool. Llamar desde el lifespan.
+    
+    Args:
+        extract_func: Función de extracción a inyectar. Si no se provee,
+                      se importa por defecto desde app.services.pdf_extractor.
+    """
+    global _pool, _in_flight, _extract_func
     _in_flight = 0
     _pool = _init_pool()
+    if extract_func is not None:
+        _extract_func = extract_func
+    elif _extract_func is None:
+        from app.services.pdf_extractor import extract_pdf_bytes as _default_extract
+        _extract_func = _default_extract
 
 
 def shutdown() -> None:
@@ -113,4 +124,7 @@ async def submit_extraction(pdf_bytes: bytes) -> dict:
 
 def _extract_sync(pdf_bytes: bytes) -> dict:
     """Función que corre en el proceso hijo. Extrae texto de los bytes del PDF."""
-    return extract_pdf_bytes(pdf_bytes)
+    func = _extract_func
+    if func is None:
+        from app.services.pdf_extractor import extract_pdf_bytes as func
+    return func(pdf_bytes)

@@ -33,6 +33,7 @@ from app.core.errors import (
 )
 from app.core.logging_config import configure_logging
 from app.core.metrics import extraction_duration, extraction_errors
+from app.services.pdf_extractor import extract_pdf_bytes
 from app.workers.pool import get_pool, shutdown, startup, submit_extraction
 
 configure_logging(settings.loglevel.upper())
@@ -46,7 +47,7 @@ CHUNK_SIZE = 65536  # 64 KiB
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gestión del ciclo de vida: arranca y apaga el pool de procesos."""
-    startup()
+    startup(extract_func=extract_pdf_bytes)
     logger.info("pdf-extractor-service iniciado")
     try:
         yield
