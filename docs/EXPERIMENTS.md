@@ -42,3 +42,34 @@ Cada entrada registra: hipótesis, cambio, métricas (medición real) y decisió
 1. Ejecutar k6 spike (0→100 VUs en 10s, 20s sostenidos, 10s bajada) contra `docker compose up --build` y registrar: throughput, error rate, p50/p90/p95/max. Objetivo: >25.35 req/s, 0% error, latencias ≤ las de la cátedra.
 2. Ejecutar Vegeta (50 req/s, 30 s, 1.500 requests rotando 4 PDFs, timeout cliente 30 s) y registrar: tasa de éxito, throughput efectivo, p50, timeouts de cliente. Objetivo: más éxito y throughput que la cátedra (16.65 req/s, 66.53% éxito), menos timeouts.
 3. Validar que nunca hay 500 por saturación: solo 429 (cola llena) y 503 (timeout) con `Retry-After`.
+
+---
+
+## Exp 2 – WORKER_POOL_SIZE de 1 → 4 (APLICADO)
+
+**Hipótesis:** Aumentar el pool de procesos de 1 a 4 workers por réplica (20 workers totales con 5 réplicas) incrementa el throughput de extracción y reduce el tiempo de espera en cola bajo carga de 100 VUs.
+
+**Cambio:**
+- `pdf-extractor-service/.env`: `WORKER_POOL_SIZE=1` → `WORKER_POOL_SIZE=4`
+- `pdf-extractor-service/.env.example`: `WORKER_POOL_SIZE=1` → `WORKER_POOL_SIZE=4`
+- `pdf-extractor-service/README.md`: actualizado valor por defecto
+
+**Métricas reales (medición individual, stack completo con docker compose):**
+- PDF 1MB, 1 VU: 2.2 s (antes del cambio de MAX_FILE_SIZE_MB)
+- PDF 9MB, 1 VU: 1.42 s (después de fixear MAX_FILE_SIZE_MB 10→15 en export-viewer-service)
+- Spike 100 VUs, 9MB PDF: sin iterations completadas en 20s (WORKER_POOL_SIZE=1, cuello de botella en cola)
+- Spike 100 VUs, 9MB PDF, WORKER_POOL_SIZE=4: en progreso
+
+**Nota sobre MAX_FILE_SIZE_MB:** El orquestador tenía `MAX_FILE_SIZE_MB=10` pero el extractor acepta 15MB. Los PDFs de 9MB reales ocupan ~12MB en disco, superando el límite del orquestador y devolviendo 413. Se corrigió a 15 en ambos servicios.
+
+**Decisión:** MANTENER WORKER_POOL_SIZE=4. Pendiente medir spike completo y ajustar RATE_LIMIT_MAX (60 req/min bloquea 100 VUs).
+
+---
+
+## Exp 3 – RATE_LIMIT_MAX (PENDIENTE)
+
+**Hipótesis:** El rate limiter del orquestador (RATE_LIMIT_MAX=60 req/min por IP) bloquea el test de spike con 100 VUs, ya que todos comparten la misma IP del contenedor k6.
+
+**Cambio pendiente:** Subir `RATE_LIMIT_MAX` en `export-viewer-service/.env` para permitir el test de carga.
+
+**Decisión:** PENDIENTE.
