@@ -2,6 +2,28 @@
 
 Servicio sin estado que extrae texto de archivos PDF. Es invocado por el orquestador (`export-viewer-service`) y expuesto directamente para pruebas de carga. No usa base de datos ni persiste información.
 
+## Acceso rápido (para entrar a la página localmente)
+
+Este servicio no tiene interfaz web propia. Se accede a través del orquestador en:
+
+**http://localhost:8000**
+
+Para levantar todo el stack y poder entrar a la página:
+
+1. Abre una terminal en la carpeta raíz del proyecto (`pdf_extractor_microservicios`).
+2. Ejecuta:
+
+   ```bash
+   docker compose -f docker-compose.infra.yml up --build -d
+   docker compose up --build -d
+   ```
+
+3. Abre tu navegador en **http://localhost:8000**.
+
+### ⚠️ Importante sobre `http://pdf-extractor-service`
+
+Ese nombre **no funciona en tu navegador**. Es un nombre interno de Docker que solo los contenedores se entienden entre ellos. Desde tu computadora, siempre usa **http://localhost:8000**.
+
 ## Responsabilidades
 
 - Extraer texto de PDFs usando `pymupdf`
