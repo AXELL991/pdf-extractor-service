@@ -70,8 +70,32 @@ app = FastAPI(
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Middleware: seguridad de cabeceras (Security Headers)
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(), payment=()"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self';"
+    )
     return response
 
 
@@ -220,19 +244,26 @@ async def _process_pdf(pdf_bytes: bytes, legacy: bool) -> dict:
 # POST /extract  (contrato del TP: sin auth, {"content","page_count"})
 # ---------------------------------------------------------------------------
 @app.post("/extract", tags=["extracción"])
-async def extract(request: Request):
+async def extract(
+    request: Request,
+    x_internal_token: str | None = Header(default=None),
+):
     """
     Extrae texto de un PDF.
 
     Admite multipart/form-data (campo ``file``) y body binario directo
     (Content-Type: application/pdf).
 
+    Requiere cabecera X-Internal-Token.
+
     Errores:
+    - 401: token interno inválido o ausente.
     - 400: PDF inválido / falta el campo file.
     - 413: archivo demasiado grande.
     - 429: cola llena (cabecera Retry-After).
     - 503: saturación/timeout de extracción (cabecera Retry-After).
     """
+    verify_internal_token(x_internal_token)
     pdf_bytes = await _read_pdf_payload(request)
     result = await _process_pdf(pdf_bytes, legacy=False)
     return {"content": result["text"], "page_count": result["pages"]}
